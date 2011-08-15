@@ -18,9 +18,6 @@ log = logging.getLogger(__name__)
 
 _name_re = re.compile('^"(?P<name>[^"]+)"\s*(?P<uuid>{[^}]+})$')
 
-# TODO Need to find VBoxGuestAdditions based on the OS
-_VBoxGuestAdditions = '/Applications/VirtualBox.app/Contents/MacOS/VBoxGuestAdditions.iso'
-
 class Timeout(Exception):
     pass
 
@@ -496,6 +493,17 @@ class VboxManage(object):
         """
         self.load_dvd(vm, 'emptydrive')
 
+    @property
+    def guest_additions_iso(self):
+        paths = [
+            '/Applications/VirtualBox.app/Contents/MacOS/VBoxGuestAdditions.iso',
+            '/usr/share/virtualbox/VBoxGuestAdditions.iso'
+        ]
+
+        for p in paths:
+            if path.exists(p):
+                return p
+
 manage = VboxManage()
 
 def free_port():
@@ -740,6 +748,9 @@ class Vbox(object):
 
         First checks if port is open, then tries to see if it response to SSH connectivity.
         """
+        if not self.ssh_port:
+            raise Exception('SSH port for %r not assigned or detected.' % self.name)
+
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(2)
         try:
@@ -866,7 +877,7 @@ class VboxSession(object):
         ):
             log.info('Installing guest additions...')
 
-            manage.load_dvd(self._vbox.name, _VBoxGuestAdditions)
+            manage.load_dvd(self._vbox.name, manage.guest_additions_iso)
 
             mount_point = '/media/cdrom'
 
