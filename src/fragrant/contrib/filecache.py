@@ -2,6 +2,7 @@ import hashlib
 from tempfile import NamedTemporaryFile
 import urllib2
 import os
+import shutil
 
 import logging
 
@@ -54,6 +55,6 @@ class FileCache(object):
             
             log.debug('Read %d bytes', read)
 
-            os.rename(outfile.name, path)
+            shutil.move(outfile.name, path)
         finally:
             remote_file.close()

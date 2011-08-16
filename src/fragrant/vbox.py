@@ -714,7 +714,18 @@ class Vbox(object):
         if self._running_stack_count == 0:
             self._started_by_context = not self.is_running
             self._ensure_running()
-            self._session = VboxSession(self)
+
+            host = '{host}:{port}'.format(host=self.host, port=self.ssh_port)
+            password = env.passwords.get(host, self.password)
+
+            self._session = VboxSession(self, settings(
+                hosts = [host],
+                disable_known_hosts = True,
+                host_string = host,
+                user = env.user or self.username,
+                password = env.password or password,
+            ))
+            self._session.__enter__()
 
         self._running_stack_count += 1
 
@@ -732,6 +743,9 @@ class Vbox(object):
                     self.halt()
             elif self._started_by_context:
                 self.halt()
+
+            self._session.__exit__(type, value, traceback)
+            self._session = None
 
         return False
     
@@ -857,46 +871,43 @@ class VboxSession(object):
             print session.name
 
     """
-    def __init__(self, vbox):
+    def __init__(self, vbox, settings):
         self._vbox = vbox
         self.name = self._vbox.name
+        self._settings = settings
+
+    def __enter__(self):
+        self._settings.__enter__()
+
+    def __exit__(self, *args):
+        self._settings.__exit__(*args)
 
     def install_guest_additions(self):
         """
         Installs guest additions into the VM.
         """
-        host = '{host}:{port}'.format(host=self._vbox.host, port=self._vbox.ssh_port)
-        password = env.passwords.get(host, self._vbox.password)
+        log.info('Installing guest additions...')
 
-        with settings(
-            hosts = [host],
-            disable_known_hosts = True,
-            host_string = host,
-            user = env.user or self._vbox.username,
-            passwords = { host : password },
-        ):
-            log.info('Installing guest additions...')
+        manage.load_dvd(self._vbox.name, manage.guest_additions_iso)
 
-            manage.load_dvd(self._vbox.name, manage.guest_additions_iso)
+        mount_point = '/media/cdrom'
 
-            mount_point = '/media/cdrom'
+        sudo(clom.mkdir(mount_point, p=True))
 
-            sudo(clom.mkdir(mount_point, p=True))
-
-            with settings(warn_only=True):
-                r = sudo(clom.mountpoint(mount_point))
-            if r.return_code == 0:
-                sudo(clom.umount(mount_point))
-
-            sudo(clom.mount('/dev/cdrom', mount_point))
-
-            with cd(mount_point):
-                sudo(clom.sh('VBoxLinuxAdditions.run'))
-
+        with settings(warn_only=True):
+            r = sudo(clom.mountpoint(mount_point))
+        if r.return_code == 0:
             sudo(clom.umount(mount_point))
-            log.warn('It is OK if "Installing the Window System" failed.')
 
-            manage.eject_dvd(self._vbox.name)
+        sudo(clom.mount('/dev/cdrom', mount_point))
+
+        with cd(mount_point):
+            sudo(clom.sh('VBoxLinuxAdditions.run'))
+
+        sudo(clom.umount(mount_point))
+        log.warn('It is OK if "Installing the Window System" failed.')
+
+        manage.eject_dvd(self._vbox.name)
 
     def wait_for_ssh(self, timeout=None):
         """

@@ -30,6 +30,16 @@ def sshtest():
     print vbox.ssh_up
 
 @task
+def ssh():
+    """
+    Check to see if ssh is up
+    """
+    vbox = Vbox(env.vm_name)
+    with vbox as session:
+        session.wait_for_ssh()
+        open_shell()
+
+@task
 def start(headless=True):
     """
     Start the VM
