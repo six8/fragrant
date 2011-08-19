@@ -53,7 +53,7 @@ class Response(object):
 
     @property
     def content_length(self):
-        return (self.content_start - self.content_end) + 1
+        return (self.content_end - self.content_start) + 1
         
     @property
     def headers(self):

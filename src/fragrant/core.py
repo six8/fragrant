@@ -1,5 +1,14 @@
+import contextlib
+import re
 from fabric.api import hide, local
-from clom import clom
+from fabric.context_managers import settings
+from clom import clom, NOT_SET
+import time
+from fragrant.exceptions import Timeout, FragrantException
+import logging
+from fragrant.util import check_ssh_up
+
+log = logging.getLogger(__name__)
 
 class Vagrant(object):
     def __init__(self):
@@ -19,10 +28,22 @@ class Vagrant(object):
             with hide('running', 'stdout', 'stderr'):
                 for line in local(self.vagrant.ssh_config, capture=True).strip().split('\n'):
                     key, val = line.strip().split(' ', 1)
-                    ssh_config[key] = val.strip()
+                    val = val.strip()
+                    if key == 'Port':
+                        val = int(val)
+                        
+                    ssh_config[key] = val
             self._ssh_config = ssh_config
 
         return self._ssh_config
+
+    @property
+    def ssh_host(self):
+        return self._ssh_config.get('HostName', None)
+
+    @property
+    def ssh_port(self):
+        return self._ssh_config.get('Port', None)
 
     def use_host(self):
         """
@@ -31,16 +52,28 @@ class Vagrant(object):
         def decorate(func):
             @functools.wraps(func)
             def _call(*args, **kwargs):
-                self.start()
-                env.hosts = ['{User}@{HostName}:{Port}'.format(**self.ssh_config)]
-                env.key_filename = self.ssh_config['IdentityFile']
-                env.disable_known_hosts = True
-                env.host_string = env.hosts[0]
-                return func(*args, **kwargs)
+                self._ensure_running()
+                with self.ssh_context():
+                    return func(*args, **kwargs)
 
             return _call
 
         return decorate
+
+    @contextlib.contextmanager
+    def ssh_context(self):
+        """
+        Context manager that sets up Fabric's host settings with settings
+        for this box's SSH settings.
+        """
+        host = '{User}@{HostName}:{Port}'.format(**self.ssh_config)
+        with settings(
+            hosts = [host],
+            disable_known_hosts = True,
+            host_string = host,
+            key_filename = self.ssh_config['IdentityFile']
+        ):
+            yield
 
     def cd(self):
         """
@@ -49,18 +82,32 @@ class Vagrant(object):
         return cd('/mnt/vagrant')
 
     @property
-    def is_up(self):
+    def is_running(self):
+        return self.state == 'running'
+
+    @property
+    def state(self):
         with hide('running'):
             status = local(self.vagrant.status, capture=True)
-            return 'powered on' in status
-            
+
+        lines = filter(None, status.strip().split('\n'))
+        if lines[0] == 'Current VM states:':
+            _, state = re.split(r'\s+', lines[1])
+            return state
+        else:
+            raise FragrantException('Could not determine VM state')
+
+
+    @property
+    def ssh_up(self):
+        return check_ssh_up(self.ssh_host, self.ssh_port)
+
     def start(self):
         """
         Start the VM without provisioning
         """
-        if not self._started:
+        if not self.is_running:
             local(self.vagrant.up.with_opts('--no-provision'))
-            self._started = True
 
     def halt(self):
         """
@@ -102,11 +149,11 @@ class Vagrant(object):
         """
         local(self.vagrant.reload)
 
-    def package(self):
+    def package(self, base, output):
         """
         Package a Vagrant environment for distribution
         """
-        local(self.vagrant.package)
+        local(self.vagrant.package.with_opts(base=base, output=output))
 
     def destroy(self):
         """
@@ -114,7 +161,7 @@ class Vagrant(object):
         """
         local(self.vagrant.destroy)
 
-    def init(self, box_name, box_url):
+    def init(self, box_name=NOT_SET, box_url=NOT_SET):
         """
         Initializes the current folder for Vagrant usage
         """
@@ -127,7 +174,7 @@ class Vagrant(object):
         """
         with hide('running', 'stdout'):
             boxes = [
-                b.strip()[4:]
+                b.strip()
                     for b in local(self.vagrant.box.list, capture=True).strip().split('\n')
             ]
         return boxes
@@ -151,3 +198,53 @@ class Vagrant(object):
         """
         with hide('running'):
             local(self.vagrant.box.add(name, uri))
+
+    @contextlib.contextmanager
+    def session(self, halt_if_started=False, timeout=None):
+        """
+        Context manager that starts the VM if needed and sets up a SSH context.
+
+        :param halt_if_started: bool - If the context started the VM it will halt it when the context is exited
+        :param timeout: int - Seconds to wait for VM to start
+        """
+        start = time.time()
+        started_by_context = self._ensure_running(timeout)
+
+        try:
+            with self.ssh_context():
+                log.info('Waiting for SSH on port %d...' % self.ssh_config['Port'])
+                while not self.ssh_up:
+                    if not self.is_running:
+                        raise Exception('VM stopped while waiting for SSH')
+                    elif timeout and time.time() - start > timeout:
+                        raise Timeout('Waiting for SSH timed out')
+                    else:
+                        time.sleep(2)
+
+                yield
+        finally:
+            if started_by_context and halt_if_started:
+                self.halt()
+
+
+    def _ensure_running(self, timeout=None):
+        """
+        If the VM is not running, start it.
+
+        Returns True if the VM had to be started, False if it was already running.
+        """
+
+        start = time.time()
+        started = False
+        if not self.is_running:
+            self.start()
+            log.info('Waiting for VM to start...')
+            while not self.is_running:
+                if timeout and time.time() - start > timeout:
+                    raise Timeout('Waiting for start timed out')
+                else:
+                    time.sleep(2)
+
+            started = True
+
+        return started

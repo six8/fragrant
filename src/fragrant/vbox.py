@@ -3,8 +3,6 @@ from fabric.context_managers import settings, cd
 from fabric.contrib.console import confirm
 from fabric.operations import sudo
 from fabric.utils import abort
-from paramiko.transport import Transport
-import paramiko
 from clom import clom
 import socket
 from os import path
@@ -13,13 +11,12 @@ import json
 import string
 import time
 import logging
+from fragrant.exceptions import Timeout
+from fragrant.util import check_ssh_up
 
 log = logging.getLogger(__name__)
 
 _name_re = re.compile('^"(?P<name>[^"]+)"\s*(?P<uuid>{[^}]+})$')
-
-class Timeout(Exception):
-    pass
 
 class FormatPattern(object):
     """
@@ -398,7 +395,7 @@ class VboxManage(object):
         controlvm = self.manage.controlvm.with_opts(vm).with_opts(*args, **kwargs)
         self._cmd(controlvm)
 
-    def start_vm(self, vm, headless=True):
+    def start_vm(self, vm, headless=True, **opts):
         """
         Start a VM
 
@@ -406,8 +403,16 @@ class VboxManage(object):
         """
         type = 'headless' if headless else 'gui'
 
-        startvm = self.manage.startvm.with_opts(vm, type=type)
+        if headless:
+            startvm = clom.VBoxHeadless.with_opts(startvm=vm, **opts).background()
+        else:
+            startvm = self.manage.startvm.with_opts(vm, type=type, **opts)
+
         self._cmd(startvm, capture=False)
+
+        # Wait for VM to start
+        while not self.is_vm_running(vm):
+            time.sleep(1)
 
     def port_forward(self, vm, name, hostport, guestport, hostip='', guestip='', type='tcp'):
         """
@@ -504,6 +509,12 @@ class VboxManage(object):
             if path.exists(p):
                 return p
 
+    def is_vm_running(self, vm):
+        """
+        Return True if the VM is running
+        """
+        return vm in [v['name'] for v in self.runningvms]
+
 manage = VboxManage()
 
 def free_port():
@@ -541,7 +552,7 @@ class Vbox(object):
         """
         Return True if the VM is running
         """
-        return self.name in [v['name'] for v in manage.runningvms]
+        return manage.is_vm_running(self.name)
 
     @property
     def exists(self):
@@ -550,11 +561,11 @@ class Vbox(object):
         """
         return self.name in [v['name'] for v in manage.vms]
 
-    def start(self, headless=True):
+    def start(self, headless=True, **opts):
         """
         Start the VM
         """
-        return manage.start_vm(self.name, headless=headless)
+        return manage.start_vm(self.name, headless=headless, **opts)
 
     def _ensure_running(self):
         """
@@ -574,7 +585,7 @@ class Vbox(object):
             self.enable_ssh_forward()
 
             log.info('Starting VM %s' % self.name)
-            self.start(headless=False)
+            self.start()
 
             while not self.is_running:
                 time.sleep(2)
@@ -644,7 +655,8 @@ class Vbox(object):
         #NIC Type Am79C973 for PXE boot
         kwargs = {
             'nic%d' % nic : 'nat',
-            'nictype%d' % nic : 'Am79C973',
+            'nictype%d' % nic : '82540EM',
+            #'nictype%d' % nic : 'Am79C973',
             'boot1' : 'net',
         }
         self.modify(**kwargs)
@@ -687,6 +699,9 @@ class Vbox(object):
         try:
             try:
                 self.join(timeout)
+
+                # Give time for VM to unlock
+                time.sleep(1)
             except Timeout:
                 if method == 'acpipowerbutton' and confirm('ACPI power off is failing, would you like to force shutdown?'):
                     return self.halt(poweroff=True)
@@ -754,44 +769,8 @@ class Vbox(object):
         """
         Return True if SSH connectivity exists.
         """
-        return self.check_ssh_up(quick=False)
+        return check_ssh_up(self.host, self.ssh_port)
 
-    def check_ssh_up(self, quick=False):
-        """
-        Return True if SSH connectivity exists.
-
-        First checks if port is open, then tries to see if it response to SSH connectivity.
-        """
-        if not self.ssh_port:
-            raise Exception('SSH port for %r not assigned or detected.' % self.name)
-
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(2)
-        try:
-            s.connect((self.host, self.ssh_port))
-        except socket.error as e:
-            if e.errno in (61,):
-                return False
-            else:
-                raise
-        else:
-            if quick:
-                return True
-            else:
-                # Basic connectivity works, try SSH
-                t = Transport(s)
-                # Shut up paramiko logging
-                plog = logging.getLogger('paramiko.transport')
-                plog.disabled = True
-                try:
-                    t.start_client()
-                    return True
-                except paramiko.SSHException as e:
-                    return False
-                finally:
-                    t.close()
-                    s.close()
-                    plog.disabled = False
 
     def remove(self):
         """
@@ -829,7 +808,7 @@ class Vbox(object):
             self.set_hostonly_nic(nic=hostonly_nic)
 
         if hd_size:
-            manage.create_hd(self.name, size=4096)
+            manage.create_hd(self.name, size=hd_size)
         if dvd:
             manage.create_dvd(self.name)
 
