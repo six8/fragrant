@@ -8,6 +8,8 @@ def main():
         zip_safe=False,
         install_requires = [
             'fabric>=1.2',
+            'clom>=0.7.4',
+            'paramiko'
         ],
         extras_require = {
             'httpcache': ['eventlet'],

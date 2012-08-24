@@ -2,7 +2,7 @@ import contextlib
 import re
 from fabric.api import hide, local
 from fabric.context_managers import settings
-from clom import clom, NOT_SET
+from clom import clom, NOTSET
 import time
 from fragrant.exceptions import Timeout, FragrantException
 import logging
@@ -26,7 +26,7 @@ class Vagrant(object):
         if self._ssh_config is None:
             ssh_config = {}
             with hide('running', 'stdout', 'stderr'):
-                for line in local(self.vagrant.ssh_config, capture=True).strip().split('\n'):
+                for line in local(self.vagrant['ssh-config'], capture=True).strip().split('\n'):
                     key, val = line.strip().split(' ', 1)
                     val = val.strip()
                     if key == 'Port':
@@ -161,7 +161,7 @@ class Vagrant(object):
         """
         local(self.vagrant.destroy)
 
-    def init(self, box_name=NOT_SET, box_url=NOT_SET):
+    def init(self, box_name=NOTSET, box_url=NOTSET):
         """
         Initializes the current folder for Vagrant usage
         """
