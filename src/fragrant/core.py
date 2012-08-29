@@ -92,7 +92,7 @@ class Vagrant(object):
 
         lines = filter(None, status.strip().split('\n'))
         if lines[0] == 'Current VM states:':
-            _, state = re.split(r'\s+', lines[1])
+            _, state = re.split(r'\s+', lines[1], 1)
             return state
         else:
             raise FragrantException('Could not determine VM state')
