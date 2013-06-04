@@ -468,21 +468,20 @@ class VboxManage(object):
 
         return filename
 
-    def create_dvd(self, vm, controller='SATA Controller'):
+    def create_dvd(self, vm, controller='SATA Controller', port=1, device=0):
         """
         Add a DVD drive to the VM.
 
         @see http://www.virtualbox.org/manual/ch08.html#idp14153472
         """
-        self._cmd(self.manage.storageattach.with_opts(vm).with_opts(storagectl=controller, port=1, device=0, type='dvddrive', medium='emptydrive', forceunmount=True))
+        self._cmd(self.manage.storageattach.with_opts(vm).with_opts(storagectl=controller, port=port, device=device, type='dvddrive', medium='emptydrive', forceunmount=True))
 
-    def load_dvd(self, vm, iso_path, controller='SATA Controller'):
+    def load_dvd(self, vm, iso_path, controller='SATA Controller', port=1, device=0):
         """
         Load a DVD/CD iso in the DVD drive of the VM.
 
         @see http://www.virtualbox.org/manual/ch08.html#idp14153472
         """
-        self.create_dvd(vm)
         self._cmd(self.manage.storageattach.with_opts(vm).with_opts(
             storagectl=controller,
             port=1,
@@ -492,11 +491,20 @@ class VboxManage(object):
             forceunmount=True
         ))
 
-    def eject_dvd(self, vm):
+        class DVD:
+            def __init__(self, manage):
+                self.manage = manage
+
+            def eject(self):
+                return self.manage.eject_dvd(vm, controller=controller, port=port, device=device)
+
+        return DVD(self)
+
+    def eject_dvd(self, vm, controller='SATA Controller', port=1, device=0):
         """
         Unload an iso connected to the DVD drive.
         """
-        self.load_dvd(vm, 'emptydrive')
+        self.load_dvd(vm, 'emptydrive', controller=controller, port=port, device=device)
 
     @property
     def guest_additions_iso(self):
@@ -514,6 +522,17 @@ class VboxManage(object):
         Return True if the VM is running
         """
         return vm in [v['name'] for v in self.runningvms]
+
+    def guestproperty(self, vm, name, value=None):
+        """
+        Get or set a guest property.
+        """
+        if value is not None:
+            self._cmd(self.manage.guestproperty.set.with_opts(vm, name, value))
+
+        value = self._cmd(self.manage.guestproperty.get.with_opts(vm, name))
+        if value.startswith('Value:'):
+            return value[len('Value:'):].strip()
 
 manage = VboxManage()
 

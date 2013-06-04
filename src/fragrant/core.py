@@ -1,20 +1,24 @@
 import contextlib
 import re
-from fabric.api import hide, local
+from fabric.api import hide, local, lcd, sudo, cd, puts
 from fabric.context_managers import settings
 from clom import clom, NOTSET
 import time
 from fragrant.exceptions import Timeout, FragrantException
 import logging
 from fragrant.util import check_ssh_up
+from fragrant.vbox import manage
+import os
 
 log = logging.getLogger(__name__)
 
 class Vagrant(object):
-    def __init__(self):
+    def __init__(self, dir=None):
         self.vagrant = clom.vagrant
 
         self._ssh_config = None
+        self._id = None
+        self._dir = dir
 
     @property
     def ssh_config(self):
@@ -29,6 +33,9 @@ class Vagrant(object):
                 for line in local(self.vagrant['ssh-config'], capture=True).strip().split('\n'):
                     key, val = line.strip().split(' ', 1)
                     val = val.strip()
+                    if val.startswith('"') and val.endswith('"'):
+                        val = val[1:-1]
+
                     if key == 'Port':
                         val = int(val)
                         
@@ -39,11 +46,11 @@ class Vagrant(object):
 
     @property
     def ssh_host(self):
-        return self._ssh_config.get('HostName', None)
+        return self.ssh_config.get('HostName', None)
 
     @property
     def ssh_port(self):
-        return self._ssh_config.get('Port', None)
+        return self.ssh_config.get('Port', None)
 
     def use_host(self):
         """
@@ -59,6 +66,13 @@ class Vagrant(object):
             return _call
 
         return decorate
+
+    @property
+    def id(self):
+        if self._id is None:
+            with open(os.path.join(self._dir, '.vagrant/machines/default/virtualbox/id'), 'r') as f:
+                self._id = f.read().strip()
+        return self._id
 
     @contextlib.contextmanager
     def ssh_context(self):
@@ -91,8 +105,14 @@ class Vagrant(object):
             status = local(self.vagrant.status, capture=True)
 
         lines = filter(None, status.strip().split('\n'))
-        if lines[0] == 'Current VM states:':
-            _, state = re.split(r'\s+', lines[1], 1)
+        # Vagrant 1.1+ uses 'Current machine states:'
+        if lines[0] in ['Current VM states:', 'Current machine states:']:
+            machine, state = re.split(r'\s+', lines[1], 1)
+
+            # Vagrant 1.1+ adds box type to state, see if it's there
+            m = re.match(r'^(?P<state>[^\s]+)\s*\((?P<type>.+)\)$', state)
+            if m:
+                state = m.groupdict()['state']
             return state
         else:
             raise FragrantException('Could not determine VM state')
@@ -226,6 +246,52 @@ class Vagrant(object):
             if started_by_context and halt_if_started:
                 self.halt()
 
+    def install_guest_additions(self, **kwargs):
+        """
+        Installs guest additions into the VM.
+        """
+        puts('Installing guest additions...')
+
+        dvd = manage.load_dvd(self.id, manage.guest_additions_iso, **kwargs)
+
+        mount_point = '/media/cdrom'
+
+        sudo(clom.mkdir(mount_point, p=True))
+
+        with settings(warn_only=True):
+            # See if the directory is mounted
+            r = sudo(clom.mountpoint(mount_point))
+        if r.return_code == 0:
+            # Directory is mounted, unmount
+            sudo(clom.umount(mount_point))
+
+        with settings(warn_only=True):
+            tries = 0
+            while tries < 3:
+                r = sudo(clom.mount('/dev/cdrom', mount_point))
+                if r.return_code == 0:
+                    # Mounted
+                    break
+                else:
+                    # cdrom busy, try again
+                    tries +=1
+                    time.sleep(5)
+
+        with cd(mount_point):
+            with settings(warn_only=True):
+                # We ignore errors because X11 install may fail if X11 isn't availible
+                # TODO Ignore certain failures but not all
+                sudo(clom.sh()['VBoxLinuxAdditions.run']('force'))
+                puts('It is OK if "Installing the Window System" failed.')
+
+        sudo(clom.umount(mount_point))
+
+        dvd.eject()
+
+        # Fix it so the correct version is reported when VM starts
+        # see https://groups.google.com/forum/?fromgroups=#!topic/vagrant-up/L2wEF5dHP9g
+        product = manage.guestproperty(self.id, '/VirtualBox/GuestInfo/OS/Product')
+        manage.guestproperty(self.id, '/VirtualBox/GuestInfo/OS/Product', product)
 
     def _ensure_running(self, timeout=None):
         """
