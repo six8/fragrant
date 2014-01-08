@@ -75,17 +75,24 @@ class Vagrant(object):
         return self._id
 
     @contextlib.contextmanager
-    def ssh_context(self):
+    def ssh_context(self, ssh_config=None):
         """
         Context manager that sets up Fabric's host settings with settings
         for this box's SSH settings.
+
+        :param ssh_config: Config parameters to use with this SSH context. See
+                           `vagrant ssh-config` for example.
+        :type ssh_config: dict
         """
-        host = '{User}@{HostName}:{Port}'.format(**self.ssh_config)
+        config = self.ssh_config
+        if ssh_config:
+            config.update(ssh_config)
+        host = '{User}@{HostName}:{Port}'.format(**config)
         with settings(
             hosts = [host],
             disable_known_hosts = True,
             host_string = host,
-            key_filename = self.ssh_config['IdentityFile']
+            key_filename = config['IdentityFile']
         ):
             yield
 
@@ -220,7 +227,7 @@ class Vagrant(object):
             local(self.vagrant.box.add(name, uri))
 
     @contextlib.contextmanager
-    def session(self, halt_if_started=False, timeout=None):
+    def session(self, halt_if_started=False, timeout=None, ssh_config=None):
         """
         Context manager that starts the VM if needed and sets up a SSH context.
 
@@ -231,7 +238,7 @@ class Vagrant(object):
         started_by_context = self._ensure_running(timeout)
 
         try:
-            with self.ssh_context():
+            with self.ssh_context(ssh_config):
                 log.info('Waiting for SSH on port %d...' % self.ssh_config['Port'])
                 while not self.ssh_up:
                     if not self.is_running:
