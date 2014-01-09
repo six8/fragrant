@@ -84,7 +84,7 @@ class Vagrant(object):
                            `vagrant ssh-config` for example.
         :type ssh_config: dict
         """
-        config = self.ssh_config
+        config = dict(self.ssh_config)
         if ssh_config:
             config.update(ssh_config)
         host = '{User}@{HostName}:{Port}'.format(**config)
